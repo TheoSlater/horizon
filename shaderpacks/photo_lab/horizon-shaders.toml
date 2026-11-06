@@ -6,3 +6,7 @@ api = "0.1"
 
 [material]
 file = "material.wgsl"
+
+[shadow]
+resolution = 2048
+distance = 128.0
