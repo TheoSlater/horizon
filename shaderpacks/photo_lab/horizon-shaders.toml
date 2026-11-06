@@ -10,3 +10,24 @@ file = "material.wgsl"
 [shadow]
 resolution = 2048
 distance = 128.0
+
+[[post]]
+file = "post/ao.wgsl"
+name = "Ambient Occlusion"
+
+[[tags]]
+id = "vegetation"
+sprites = [
+    "block/short_grass",
+    "block/tall_grass*",
+    "block/fern",
+    "block/large_fern*",
+    "block/*_leaves",
+    "block/*_sapling",
+    "block/*_flower",
+    "block/*_tulip",
+    "block/poppy",
+    "block/dandelion",
+    "block/*_bush",
+    "block/vine"
+]
