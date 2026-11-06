@@ -1,0 +1,8 @@
+schema = 1
+id = "photo_lab"
+name = "Photo Lab"
+version = "0.1.0"
+api = "0.1"
+
+[material]
+file = "material.wgsl"

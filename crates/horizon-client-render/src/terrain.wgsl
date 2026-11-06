@@ -626,7 +626,16 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     var color = texel * in.color;
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
-    return solid_finish(in, texel, color);
+    let shaded = solid_finish(in, texel, color);
+
+    // Experimental warm colour grading
+    let warm = vec3<f32>(1.15, 1.05, 0.90);
+    let realistic_color = min(
+        shaded.rgb * warm,
+        vec3<f32>(1.0)
+    );
+
+    return vec4<f32>(realistic_color, shaded.a);
 }
 // The water mirror (gfx.rs's reflection pass): what lies below the water plane
 // (`fog_ends.w`, camera-relative) would show above it in the mirror, so it is cut away.
