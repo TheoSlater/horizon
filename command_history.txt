@@ -1,0 +1,12 @@
+/time set night
+/time set 9000
+/time set 90000
+/time set day
+/time set sunset
+/time set
+/time set minecraft:day
+/time set 0
+/weather rain
+/reload
+/time set day
+/weather clear
