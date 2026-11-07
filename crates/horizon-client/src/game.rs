@@ -374,6 +374,7 @@ mod ui_control;
 mod vault;
 mod vehicle_teleport;
 mod villagers;
+mod volume_water;
 mod wandering_trader;
 mod win;
 mod wind;
@@ -2493,6 +2494,8 @@ struct Game<'a> {
     lod_covered_at: Option<(u64, (i32, i32), i32)>,
     /// Simulated water around the camera (Horizon experimental setting), while it is on.
     sim_water: Option<sim_water::SimWaterState>,
+    /// 3D water (Horizon experimental setting) on this server, while it is on.
+    volume_water: Option<volume_water::VolumeWater>,
     /// Whether the view's columns have all arrived, and how new it is: large
     /// translucent pages wait for both before they shrink (`set_terrain_loading`).
     view_arrival: horizon_client::streaming::ViewArrival,
@@ -5377,6 +5380,10 @@ impl Game<'_> {
     /// events) happen before the next tick runs, as they do inline in vanilla.
     pub(super) fn tick_scheduled(&mut self) -> Result<()> {
         for fluids in [false, true] {
+            // 3D water moves the water itself: vanilla's spreading stays off.
+            if fluids && self.volume_water_on() {
+                continue;
+            }
             let mut laps = horizon_client::spans::laps();
             let name = if fluids { "tb_fluids" } else { "tb_scheduled" };
             if !self.with_level(|b, level, ticks| b.scheduled_begin(level, ticks, fluids)) {
@@ -8025,6 +8032,7 @@ impl Game<'_> {
         let mut sent = None;
         if running {
             horizon_client::spans::time("tick_lan_packets", || self.tick_lan_packets());
+            horizon_client::spans::time("tick_volume_water", || self.tick_volume_water());
             sent = horizon_client::spans::time("tick_blocks", || self.tick_blocks())?;
             // What the blocks spawned (a dispensed minecart, a lit TNT, a
             // placed boat) joins before the entities tick.
@@ -19527,6 +19535,7 @@ impl Game<'_> {
                             self.settings.entity_distance,
                         );
                         server.set_legacy_rules(self.settings.extras.pvp.combat.rules);
+                        server.set_volume_water(self.settings.horizon.volume_water);
                     }
                     self.clock.end_frame(self.pause);
                     let mut consumed = false;
@@ -19844,6 +19853,7 @@ impl<'a> Game<'a> {
             lod_blue_map: None,
             lod_covered_at: None,
             sim_water: None,
+            volume_water: None,
             view_arrival: Default::default(),
             options,
             player: None,

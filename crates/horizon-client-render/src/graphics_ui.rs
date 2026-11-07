@@ -70,6 +70,7 @@ pub enum H {
     RendererMode,
     RealisticQuality,
     SimulatedWater,
+    VolumeWater,
     LodDistance,
     FarDetail,
     BlueMapAutoDetect,
@@ -405,6 +406,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::SimulatedWater,
                             High,
                             "Water flows, splashes and foams near you. Visual only.",
+                        ),
+                        h(
+                            H::VolumeWater,
+                            None,
+                            "Single player: water is real volume. It drains, pools and dries.",
                         ),
                     ],
                 ),
@@ -834,6 +840,7 @@ impl H {
             H::RendererMode => labelled("Renderer Mode", g.renderer_mode.label()),
             H::RealisticQuality => labelled("Realistic Quality", g.realistic_quality.label()),
             H::SimulatedWater => labelled("Simulated Water", on_off(g.simulated_water)),
+            H::VolumeWater => labelled("3D Water", on_off(g.volume_water)),
             H::LodDistance => match g.lod_distance {
                 0 => labelled("LOD Distance", "Off"),
                 n => labelled("LOD Distance", lang::tr("%s chunks", &[&n])),
@@ -1043,6 +1050,7 @@ impl H {
             }
             H::Sky => g.sky = !g.sky,
             H::SimulatedWater => g.simulated_water = !g.simulated_water,
+            H::VolumeWater => g.volume_water = !g.volume_water,
             H::Fog => g.fog = !g.fog,
             H::Weather => g.weather = !g.weather,
             H::AnimatedTextures => g.animated_textures = !g.animated_textures,
@@ -1271,6 +1279,7 @@ impl Item {
                         | H::RendererMode
                         | H::RealisticQuality
                         | H::SimulatedWater
+                        | H::VolumeWater
                         | H::BlueMapAutoDetect
                         | H::BlueMapRadius
                         | H::Overlay

@@ -66,6 +66,8 @@ struct Flags {
     entity_distance: AtomicU32,
     /// The PvP page's legacy combat rules, which the server's hits follow from the next tick.
     legacy_rules: AtomicBool,
+    /// The window's 3D water setting: the server's water is volume water.
+    volume_water: AtomicBool,
     /// `MinecraftServer.isCurrentlySaving`: the server is autosaving.
     saving: AtomicBool,
     /// Splitscreen players joined through memory (offline uuids): let in although the world is
@@ -205,6 +207,10 @@ impl Integrated {
     /// The window's legacy combat rules option, for the server's hits.
     pub fn set_legacy_rules(&self, on: bool) {
         self.flags.legacy_rules.store(on, Ordering::Relaxed);
+    }
+    /// The window's 3D water setting, for the server's water.
+    pub fn set_volume_water(&self, on: bool) {
+        self.flags.volume_water.store(on, Ordering::Relaxed);
     }
     /// `IntegratedServer.getPort` while `isPublished`.
     pub fn published(&self) -> Option<u16> {
@@ -471,6 +477,9 @@ impl Game<'_> {
         flags
             .legacy_rules
             .store(settings.extras.pvp.combat.rules, Ordering::Relaxed);
+        flags
+            .volume_water
+            .store(settings.horizon.volume_water, Ordering::Relaxed);
         let (ready_tx, ready) = channel();
         let (tasks, server_tasks) = channel();
         let server_flags = flags.clone();
@@ -1082,6 +1091,7 @@ impl Game<'_> {
         self.settings.entity_distance =
             f32::from_bits(flags.entity_distance.load(Ordering::Relaxed));
         self.settings.extras.pvp.combat.rules = flags.legacy_rules.load(Ordering::Relaxed);
+        self.settings.horizon.volume_water = flags.volume_water.load(Ordering::Relaxed);
         let Some(host) = self.lan.as_mut() else {
             return;
         };

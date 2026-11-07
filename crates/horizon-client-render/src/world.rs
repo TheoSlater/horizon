@@ -108,6 +108,9 @@ pub struct World {
     /// for `ServerLevel.sendBlockUpdated`'s path recomputing; kept only while
     /// the mobs of this world tick (`game/creatures.rs`).
     pub path_writes: Option<Vec<((i32, i32, i32), u32, u32)>>,
+    /// Every write (position, old and new state), kept while 3D water runs on this level
+    /// (`game/volume_water.rs`): how it sees blocks placed, broken and buckets used.
+    pub water_writes: Option<Vec<((i32, i32, i32), u32, u32)>>,
     /// The chunks changed in bulk (`edit_runs`) since the log was last
     /// drained, kept while `block_log` is: sent to the players whole.
     pub bulk_log: FxHashSet<(i32, i32)>,
@@ -222,6 +225,7 @@ impl World {
             block_log: None,
             block_log_held: Vec::new(),
             path_writes: None,
+            water_writes: None,
             bulk_log: Default::default(),
             light_log: None,
             moving_piston_fallback: Vec::new(),
@@ -323,6 +327,9 @@ impl World {
                 log.push((x, y, z));
             }
             if let Some(writes) = &mut self.path_writes {
+                writes.push(((x, y, z), previous, state.0));
+            }
+            if let Some(writes) = &mut self.water_writes {
                 writes.push(((x, y, z), previous, state.0));
             }
             self.modified.insert((x >> 4, z >> 4));
