@@ -736,6 +736,9 @@ pub struct Graphics {
     pub renderer_mode: RendererMode,
     /// Preset reserved for future realistic-renderer quality controls.
     pub realistic_quality: RealisticQuality,
+    /// Experimental: water simulated around the camera in place of vanilla's (`sim_water`).
+    /// Presentation only; off by default.
+    pub simulated_water: bool,
     /// Distant surface terrain range, in chunks; 0 disables LODs.
     pub lod_distance: u32,
     /// How finely far terrain is drawn; Full unless the player picks Reduced.
@@ -858,6 +861,7 @@ impl Default for Graphics {
             preset: Preset::Custom,
             renderer_mode: RendererMode::Vanilla,
             realistic_quality: RealisticQuality::Medium,
+            simulated_water: false,
             lod_distance: 0,
             far_detail: FarDetail::Full,
             blue_map: crate::bluemap::Settings::default(),
@@ -951,6 +955,7 @@ impl Graphics {
                 "preset" => g.preset = Preset::parse(value),
                 "rendererMode" => g.renderer_mode = RendererMode::parse(value),
                 "realisticQuality" => g.realistic_quality = RealisticQuality::parse(value),
+                "simulatedWater" => g.simulated_water = flag(g.simulated_water),
                 "lodDistance" => {
                     g.lod_distance = number(g.lod_distance).min(crate::lod::MAX_CHUNKS)
                 }
@@ -1060,10 +1065,11 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nrendererMode:{}\nrealisticQuality:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nrendererMode:{}\nrealisticQuality:{}\nsimulatedWater:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
             self.renderer_mode.name(),
             self.realistic_quality.name(),
+            bool_text(self.simulated_water),
             self.lod_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
@@ -1248,6 +1254,7 @@ mod tests {
             preset: Preset::Balanced,
             renderer_mode: RendererMode::Realistic,
             realistic_quality: RealisticQuality::Ultra,
+            simulated_water: true,
             lod_distance: 256,
             far_detail: FarDetail::Reduced,
             blue_map: crate::bluemap::Settings {

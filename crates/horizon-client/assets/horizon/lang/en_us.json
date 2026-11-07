@@ -177,6 +177,8 @@
   "Realistic": "Realistic",
   "Same image. Shader packs suspend the Realistic pass while active.": "Same image. Shader packs suspend the Realistic pass while active.",
   "Saved for future features; no effect yet.": "Saved for future features; no effect yet.",
+  "Simulated Water": "Simulated Water",
+  "Water flows, splashes and foams near you. Visual only.": "Water flows, splashes and foams near you. Visual only.",
   "Ultra Performance": "Ultra Performance",
   "Native": "Native",
   "Full": "Full",

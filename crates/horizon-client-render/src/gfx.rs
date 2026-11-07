@@ -202,6 +202,7 @@ mod readback;
 mod realistic;
 mod resident;
 mod reuse;
+pub mod sim_water;
 mod stars;
 pub mod submit;
 mod sunrise_fan;
@@ -418,6 +419,9 @@ struct Globals {
     /// full (`hdr::Hdr::windows`); zero without HDR.
     hdr_windows: [[f32; 4]; 2],
     hdr_light: [f32; 4],
+    /// Simulated water's region, where translucent water faces are left out: camera-relative
+    /// X and Z bounds, then Y bounds and 1 when on (`sim_water::Surface::hide`).
+    sim_water: [[f32; 4]; 2],
 }
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -951,6 +955,9 @@ pub struct Frame<'a> {
     /// Native mods' lines, boxes, beams and text (`native_world_primitives`), drawn at the end
     /// of the world pass, before the first-person hand.
     pub world_primitives: world_primitives::Batch<'a>,
+    /// Simulated water (Horizon experimental setting), drawn in place of vanilla water inside
+    /// its region; `None` when off. Shader packs suspend it.
+    pub sim_water: Option<sim_water::Surface<'a>>,
     /// Opaque entity quads only a native pack's shadow pass draws (the local player in first
     /// person).
     pub shadow_only: &'a [Vertex],
@@ -1179,6 +1186,8 @@ pub struct Renderer {
     see_through_pipeline: wgpu::RenderPipeline,
     /// Native mods' world primitives (`Frame::world_primitives`).
     world_primitives: world_primitives::WorldPrimitives,
+    /// Simulated water's pipelines (`Frame::sim_water`).
+    sim_water: sim_water::SimWater,
     text_polygon_offset_pipeline: wgpu::RenderPipeline,
     world_text_pipeline: wgpu::RenderPipeline,
     celestial_pipeline: wgpu::RenderPipeline,
@@ -4510,6 +4519,7 @@ impl Renderer {
             ));
         }
         let world_primitives = world_primitives::WorldPrimitives::new(&device, frame_format);
+        let sim_water = sim_water::SimWater::new(&device, frame_format);
         Ok(Self {
             display: DisplayWatch::default(),
             display_fresh: false,
@@ -4598,6 +4608,7 @@ impl Renderer {
             lightning: lightning::Renderer::new(),
             see_through_pipeline,
             world_primitives,
+            sim_water,
             text_polygon_offset_pipeline,
             world_text_pipeline,
             celestial_pipeline,
@@ -6400,6 +6411,13 @@ impl Renderer {
         self.world_post.taa = taa;
         self.world_post.upscale = if taa { upscale.clamp(1.0, 4.0) } else { 1.0 };
     }
+    /// Whether a shader pack (`shaders/` or Horizon's own) draws the world now.
+    pub fn shader_pack_active(&self) -> bool {
+        self.pack_post
+            .as_ref()
+            .is_some_and(|(_, post)| post.is_some())
+            || self.native.is_some()
+    }
     /// Selects the native world renderer. Mode changes apply on the next frame;
     /// resources are created lazily and released when Vanilla is selected.
     pub fn set_realistic_rendering(
@@ -7341,6 +7359,11 @@ impl Renderer {
                 },
             )
         };
+        // Shader packs draw their own water: simulated water waits until none is active.
+        let sim_water_frame = frame
+            .sim_water
+            .as_ref()
+            .filter(|_| !frame.title && !self.shader_pack_active());
         let globals = Globals {
             view_proj: jittered.to_cols_array_2d(),
             fog_color,
@@ -7436,6 +7459,7 @@ impl Renderer {
                 if self.hdr.is_some() { 1.0 } else { 0.0 },
                 0.0,
             ],
+            sim_water: sim_water_frame.map_or([[0.0; 4]; 2], |s| s.hide),
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
@@ -8315,6 +8339,27 @@ impl Renderer {
                 &self.entity_atlas,
             )
         };
+        match sim_water_frame {
+            Some(surface) => self.sim_water.prepare(
+                &self.device,
+                &self.queue,
+                surface,
+                &sim_water::Lighting {
+                    sky: [
+                        frame.sky.sky_color[0],
+                        frame.sky.sky_color[1],
+                        frame.sky.sky_color[2],
+                    ],
+                    day: frame.sky.sky_light_factor,
+                    fog_color,
+                    fog,
+                    sun: sun.to_array(),
+                },
+                jittered,
+                Mat4::from_cols_array_2d(&globals.inverse_view),
+            ),
+            None => self.sim_water.clear(),
+        }
         let outline_edges = frame.outline.len().min(MAX_OUTLINE_EDGES as usize);
         if outline_edges > 0 {
             // The same per-line colour and pixel width layout as the gizmo lines. A high
@@ -10342,6 +10387,10 @@ impl Renderer {
                     ((world_quads + additive_quads + hand_quads) * 4) as i32,
                     0..1,
                 );
+            }
+            // Simulated water: after the rest of the world, blended over it.
+            if sim_water_frame.is_some() {
+                self.sim_water.draw(&mut pass);
             }
             // Native mods' primitives: after the entities and the rest of the world, into its
             // targets (its resolution, reversed depth and TAA), before the hand.

@@ -41,6 +41,9 @@ struct Globals {
     // HDR lighting: x how strongly the sky lights the world now (`Sky::sky_light_factor`),
     // y what the sky and fog get: the same, but none under water; z 1 with HDR output on.
     hdr_light: vec4<f32>,
+    // Simulated water's region (gfx/sim_water.rs): [0] camera-relative X and Z bounds, [1] Y
+    // bounds and z 1 when on. Translucent water faces inside it are left out.
+    sim_water: array<vec4<f32>, 2>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var sprites: texture_2d_array<f32>;
@@ -214,6 +217,15 @@ struct TerrainOut {
     // The camera-relative height, for the water mirror's cut at the plane.
     @location(9) height: f32,
     @location(10) @interpolate(flat) emissive_layer: u32,
+    // Camera-relative position, w 1 on a fluid face (mesher.rs's `FLUID_FACE_BITS`).
+    @location(12) fluid: vec4<f32>,
+}
+// Simulated water draws this water instead (`Globals::sim_water`).
+fn sim_water_hides(fluid: vec4<f32>) -> bool {
+    let r = globals.sim_water;
+    return fluid.w > 0.5 && r[1].z > 0.5
+        && all(fluid.xz >= r[0].xy) && all(fluid.xz <= r[0].zw)
+        && fluid.y >= r[1].x && fluid.y <= r[1].y;
 }
 // Whether a fading tile or section leaves this pixel out (gfx/lod.rs's
 // `fade_code`, `fade_out_code`). It fades in, or out, chunk by chunk: each
@@ -583,6 +595,8 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
     }
     out.emission = 15u - (u32(round(color.a * 255.0)) & 15u);
     out.height = pos.y;
+    let tag = (u32(round(color.a * 255.0)) >> 4u) & 15u;
+    out.fluid = vec4(pos, select(0.0, 1.0, tag >= 8u && tag < 15u));
     out.spherical = length(pos);
     out.cylindrical = max(length(pos.xz), abs(pos.y));
     out.fade = fade_code(w);
@@ -708,6 +722,7 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
 // them with only alpha written: `fs_translucent` blends its alpha as coverage, so a lake's
 // value would be diluted. Clear glass leaves what's behind it, light sources included, alone.
 @fragment fn fs_translucent_mark(in: TerrainOut) -> @location(0) vec4<f32> {
+    if sim_water_hides(in.fluid) { discard; }
     let dx = dpdx(in.local);
     let dy = dpdy(in.local);
     hdr_normal = normalize(cross(dy, dx));
@@ -721,6 +736,7 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
 // layer drawn first in front (gfx.rs's water tiers): dithered, the faded-out
 // pixels showed the layer behind through the one in front, twice the water.
 @fragment fn fs_translucent(in: TerrainOut) -> @location(0) vec4<f32> {
+    if sim_water_hides(in.fluid) { discard; }
     var color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
     if color.a < 0.01 { discard; }

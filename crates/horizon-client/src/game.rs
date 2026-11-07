@@ -328,6 +328,7 @@ mod shelf;
 mod shield;
 mod shoulders;
 mod sign_edit;
+mod sim_water;
 mod skin_models;
 mod sniffers;
 mod social;
@@ -2490,6 +2491,8 @@ struct Game<'a> {
     far_beacons: HashMap<(i32, i32, i32), Vec<(u32, i32)>>,
     /// The detail revision, centre and radius `Lod::update` last had covered for.
     lod_covered_at: Option<(u64, (i32, i32), i32)>,
+    /// Simulated water around the camera (Horizon experimental setting), while it is on.
+    sim_water: Option<sim_water::SimWaterState>,
     /// Whether the view's columns have all arrived, and how new it is: large
     /// translucent pages wait for both before they shrink (`set_terrain_loading`).
     view_arrival: horizon_client::streaming::ViewArrival,
@@ -13218,6 +13221,7 @@ impl Game<'_> {
         // title screen is nonsense.
         self.repro_world_closed();
         self.clear_waypoints();
+        self.sim_water = None;
         self.post_effects.clear();
         self.spectated_post_effect = None;
         if self.external_server() {
@@ -16511,6 +16515,8 @@ impl Game<'_> {
             Default::default()
         };
         pr.lap("pr_primitives");
+        self.update_sim_water(camera, rain);
+        pr.lap("pr_sim_water");
         let at = camera.to_array();
         // GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown.
         let mut crosshair = horizon_client::gizmos::Gizmos::default();
@@ -16878,6 +16884,7 @@ impl Game<'_> {
             additive: &additive,
             see_through: &see_through,
             world_primitives: world_primitives.batch(),
+            sim_water: self.sim_water.as_ref().map(|s| s.surface()),
             shadow_only: &shadow_only,
             celestial: if self.settings.horizon.sky || title {
                 &celestial
@@ -19836,6 +19843,7 @@ impl<'a> Game<'a> {
             lod_level: None,
             lod_blue_map: None,
             lod_covered_at: None,
+            sim_water: None,
             view_arrival: Default::default(),
             options,
             player: None,
@@ -21854,6 +21862,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         additive: &[],
         see_through: &[],
         world_primitives: Default::default(),
+        sim_water: None,
         shadow_only: &[],
         celestial: &[],
         stars: None,

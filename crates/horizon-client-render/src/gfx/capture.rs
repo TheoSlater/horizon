@@ -550,6 +550,7 @@ impl Scene {
             additive: &[],
             see_through: &[],
             world_primitives: Default::default(),
+            sim_water: None,
             shadow_only: &[],
             celestial: &self.celestial,
             stars: f

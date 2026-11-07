@@ -625,6 +625,7 @@ pub(super) fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         additive: &[],
         see_through: &[],
         world_primitives: Default::default(),
+        sim_water: None,
         celestial: &[],
         stars: None,
         hand: &[],
