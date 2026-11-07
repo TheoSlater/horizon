@@ -4,8 +4,6 @@
 
 /// Droplets alive at once; the oldest give way.
 pub const MAX_DROPLETS: usize = 4096;
-/// Droplets fall faster than the water's own gravity: they read as spray at block scale.
-const DROPLET_GRAVITY: f32 = 18.0;
 const DRAG: f32 = 0.6;
 
 /// A droplet in region-local coordinates: X and Z in blocks from the region's corner, Y the
@@ -57,7 +55,7 @@ impl Splashes {
             if d.life <= 0.0 {
                 return false;
             }
-            d.velocity[1] -= DROPLET_GRAVITY * dt;
+            d.velocity[1] -= super::GRAVITY * dt;
             for v in &mut d.velocity {
                 *v *= damp;
             }

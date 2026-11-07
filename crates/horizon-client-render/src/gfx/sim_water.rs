@@ -40,7 +40,7 @@ impl Default for Style {
             opacity: 0.9,
             reflectance: 0.02,
             shininess: 320.0,
-            waves: 0.08,
+            waves: 0.035,
             edge_fade: 3.0,
         }
     }
@@ -129,7 +129,7 @@ impl SimWater {
         });
         let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: wgpu::ShaderStages::VERTEX,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: false },
                 view_dimension: wgpu::TextureViewDimension::D2,

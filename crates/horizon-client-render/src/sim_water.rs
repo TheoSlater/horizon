@@ -2,8 +2,10 @@
 //! renderer, Simulated Water). A shallow-water solver over a square region around the camera,
 //! seeded from the world's water and terrain: water runs downhill under gravity, pools level,
 //! falls off ledges, carries ripples, wakes and waves, and churns foam and spray where it is
-//! fast, converging or plunging. Vanilla source blocks act as springs holding their level, so
-//! lakes and seas keep theirs and a placed source feeds a stream that finds its own way down.
+//! fast, converging or plunging. Vanilla source blocks act as springs holding their level (the
+//! game's water is still there): a body of water's (a lake, the sea) slowly, so waves keep
+//! rolling; a lone placed source quickly, so it keeps feeding what it spills. Over the flow, a
+//! dispersive wave layer (`waves`) sorts splashes into trains of ripples and leaves wakes.
 //!
 //! Presentation only: gameplay water (swimming, flow pushing entities, the blocks a server
 //! sends) stays vanilla. Inside the region the renderer draws this water instead of vanilla's
@@ -14,12 +16,14 @@
 
 mod solver;
 mod splash;
+mod waves;
 
 use crate::blocks::{BlockFacts, Fluid};
 use crate::gfx::sim_water::{Style, Surface};
 use crate::world::World;
 pub use solver::{DRY, GRAVITY, Grid, WALL};
 pub use splash::{Droplet, MAX_DROPLETS, Rng, Splashes};
+use waves::Waves;
 
 /// Solver cells along a block.
 pub const CELLS_PER_BLOCK: usize = 2;
@@ -28,8 +32,11 @@ pub const REGION_BLOCKS: usize = 64;
 /// The region's side, in cells.
 pub const SIZE: usize = REGION_BLOCKS * CELLS_PER_BLOCK;
 const CELL: f32 = 1.0 / CELLS_PER_BLOCK as f32;
-/// The region moves in whole steps of this many blocks, keeping the solver's state.
-const RECENTER_STEP: i32 = 8;
+/// The region follows the camera block by block once it is this many blocks off centre,
+/// keeping the solver's state: small steps, so only a thin strip at the far edge is new.
+const RECENTER_SLACK: i32 = 2;
+/// The camera moves this far up or down before columns are read around its new height.
+const RESCAN_HEIGHT: i32 = 8;
 /// How far above and below the camera a column is scanned for its water and ground.
 const SCAN_UP: i32 = 12;
 const SCAN_DOWN: i32 = 32;
@@ -44,11 +51,27 @@ const MAX_FRAME: f32 = 0.05;
 const MAX_SUBSTEPS: usize = 6;
 /// Manning's roughness of the bed.
 const MANNING: f32 = 0.025;
-/// How quickly a vanilla source restores its level, per second.
-const SPRING_RATE: f32 = 1.5;
+/// How quickly a body's sources restore its level, per second: slow, so waves keep rolling.
+const SPRING_RATE: f32 = 0.4;
+/// How quickly a lone source (a bucket's worth) restores its level, per second.
+const LONE_SPRING_RATE: f32 = 1.5;
+/// A source belongs to a body of water with this many sources within [`BODY_REACH`] blocks of
+/// it (of the 25 there).
+const BODY_SOURCES: usize = 12;
+const BODY_REACH: i32 = 2;
+/// How deep a splash, rain or a body presses the wave layer, per unit of its push.
+const PRESS: f32 = 0.02;
 /// Sheets thinner than this, fed by no spring, soak away at [`SOAK_RATE`] blocks a second.
 const THIN: f32 = 0.02;
 const SOAK_RATE: f32 = 0.01;
+/// Foam made per second by fast or converging water, by shallow rapids, by water striking
+/// a block or bank (per block a second into it), and by breaking crests (per unit of slope);
+/// and how quickly it fades, per second.
+const FOAM_FAST: f32 = 0.06;
+const FOAM_SHALLOW: f32 = 0.15;
+const FOAM_SHORE: f32 = 0.5;
+const FOAM_CREST: f32 = 2.0;
+const FOAM_FADE: f32 = 0.9;
 /// Cells along the edge whose motion is damped, so waves leave instead of reflecting.
 const SPONGE: usize = 6;
 /// Blocks along the edge where vanilla water still draws, under the simulated water's fade.
@@ -144,6 +167,11 @@ pub struct Input {
 /// The simulated water around the camera.
 pub struct WaterSim {
     grid: Grid,
+    waves: Waves,
+    /// Per block: its source belongs to a body of water ([`BODY_SOURCES`]), the springs.
+    fed: Vec<bool>,
+    /// A source came or went: `fed` needs finding again.
+    bodies_stale: bool,
     foam: Vec<f32>,
     foam_next: Vec<f32>,
     /// The surface a vanilla source holds the cell at, NaN where none does.
@@ -183,6 +211,9 @@ impl WaterSim {
         let cells = SIZE * SIZE;
         Self {
             grid: Grid::new(SIZE, CELL),
+            waves: Waves::new(SIZE, CELL),
+            fed: vec![false; REGION_BLOCKS * REGION_BLOCKS],
+            bodies_stale: true,
             foam: vec![0.0; cells],
             foam_next: vec![0.0; cells],
             spring: vec![f32::NAN; cells],
@@ -229,6 +260,7 @@ impl WaterSim {
         self.rainfall(dt);
         self.springs(dt);
         self.grid.advance(dt, MAX_SUBSTEPS, MANNING);
+        self.waves.advance(dt, &self.grid.depth);
         self.plunges(dt);
         self.update_foam(dt);
         self.update_splashes(dt);
@@ -255,15 +287,14 @@ impl WaterSim {
         }
     }
 
-    /// Keeps the region centred on the camera, moving it in whole steps.
+    /// Keeps the region centred on the camera, a block or two at a time.
     fn follow(&mut self, camera: [f64; 3], sample: &mut dyn FnMut(i32, i32, i32) -> Column) {
         let half = REGION_BLOCKS as i32 / 2;
-        let snap = |v: f64| (v.floor() as i32).div_euclid(RECENTER_STEP) * RECENTER_STEP - half;
-        let origin = [snap(camera[0]), snap(camera[2])];
+        let centred = [camera[0], camera[2]].map(|v| v.floor() as i32 - half);
         let y = camera[1].floor() as i32;
         if !self.seeded {
             self.seeded = true;
-            self.origin = origin;
+            self.origin = centred;
             self.scan_y = y;
             for bz in 0..REGION_BLOCKS {
                 for bx in 0..REGION_BLOCKS {
@@ -272,12 +303,14 @@ impl WaterSim {
             }
             return;
         }
-        if (y - self.scan_y).abs() > RECENTER_STEP {
+        if (y - self.scan_y).abs() > RESCAN_HEIGHT {
             self.scan_y = y;
         }
-        if origin == self.origin {
+        let off = [centred[0] - self.origin[0], centred[1] - self.origin[1]];
+        if off[0].abs() < RECENTER_SLACK && off[1].abs() < RECENTER_SLACK {
             return;
         }
+        let origin = centred;
         let shift = [origin[0] - self.origin[0], origin[1] - self.origin[1]];
         self.shift(shift);
         self.origin = origin;
@@ -317,6 +350,8 @@ impl WaterSim {
         moved(&mut self.spring, d, f32::NAN);
         moved(&mut self.light, d, [15, 0]);
         moved(&mut self.vanilla, d, false);
+        self.waves.shift(d);
+        self.bodies_stale = true;
         self.splashes.shift(blocks[0] as f32, blocks[1] as f32);
     }
 
@@ -376,17 +411,51 @@ impl WaterSim {
                 _ => g.clear(i),
             }
         }
-        self.spring[i] = match column.water {
+        let spring = match column.water {
             Some(w) if column.source => w,
             _ => f32::NAN,
         };
+        if spring.is_finite() != self.spring[i].is_finite() {
+            self.bodies_stale = true;
+        }
+        self.spring[i] = spring;
         self.vanilla[i] = column.water.is_some();
         self.light[i] = [column.sky, column.block];
     }
 
+    /// Marks the blocks whose source belongs to a body of water.
+    fn find_bodies(&mut self) {
+        if !std::mem::take(&mut self.bodies_stale) {
+            return;
+        }
+        let n = REGION_BLOCKS as i32;
+        let source = |bx: i32, bz: i32| {
+            let c = CELLS_PER_BLOCK as i32;
+            self.spring[(bz * c) as usize * SIZE + (bx * c) as usize].is_finite()
+        };
+        for bz in 0..n {
+            for bx in 0..n {
+                let fed = source(bx, bz) && {
+                    let near = (-BODY_REACH..=BODY_REACH)
+                        .flat_map(|dz| (-BODY_REACH..=BODY_REACH).map(move |dx| (dx, dz)))
+                        .filter(|&(dx, dz)| {
+                            let (x, z) = (bx + dx, bz + dz);
+                            // Past the region's edge, assume the body carries on.
+                            !(0..n).contains(&x) || !(0..n).contains(&z) || source(x, z)
+                        })
+                        .count();
+                    near >= BODY_SOURCES
+                };
+                self.fed[(bz * n + bx) as usize] = fed;
+            }
+        }
+    }
+
     /// Springs restore their level; thin unfed sheets soak away; the sponge damps the edge.
     fn springs(&mut self, dt: f32) {
-        let fill = 1.0 - (-SPRING_RATE * dt).exp();
+        self.find_bodies();
+        let body_fill = 1.0 - (-SPRING_RATE * dt).exp();
+        let lone_fill = 1.0 - (-LONE_SPRING_RATE * dt).exp();
         let n = SIZE;
         for z in 0..n {
             for x in 0..n {
@@ -395,7 +464,13 @@ impl WaterSim {
                 if g.bed[i] >= WALL {
                     continue;
                 }
+                let block = (z / CELLS_PER_BLOCK) * REGION_BLOCKS + x / CELLS_PER_BLOCK;
                 let spring = self.spring[i];
+                let fill = if self.fed[block] {
+                    body_fill
+                } else {
+                    lone_fill
+                };
                 if spring.is_finite() {
                     g.depth[i] = (g.depth[i] + (spring - g.surface(i)) * fill).max(0.0);
                 } else if g.depth[i] > 0.0 && g.depth[i] < THIN {
@@ -447,10 +522,19 @@ impl WaterSim {
             _ => {}
         }
         // The body cuts the surface: it drags the water along and throws a bow wave.
-        if height < 0.3 && height > -1.9 {
+        // Swimming, wading, or riding a boat (whose rider sits above the water).
+        if height < 0.8 && height > -1.9 {
             let speed = (vx * vx + vz * vz).sqrt();
             if speed > 0.2 {
                 self.wake(lx, lz, [vx, vz], dt);
+                // A pressure moving over dispersive water: the Kelvin wake follows from it.
+                self.press(lx, lz, 0.8, speed.min(8.0) * 1.0 * dt);
+                // Churned water left astern.
+                let (bx, bz) = (lx - vx / speed * 0.8, lz - vz / speed * 0.8);
+                let churn = (speed * 0.08 * dt).min(0.2);
+                self.around(bx, bz, 0.6, |s, i, _, _, w| {
+                    s.foam[i] = (s.foam[i] + churn * w).min(1.0);
+                });
                 let spray = (speed - 2.5).max(0.0) * 30.0 * dt;
                 for _ in 0..self.count(spray) {
                     let (a, r) = (self.rng.range(0.0, std::f32::consts::TAU), 0.4);
@@ -518,13 +602,19 @@ impl WaterSim {
             s.grid.qx[i] += h * nx * strength * w;
             s.grid.qz[i] += h * nz * strength * w;
             s.foam[i] = (s.foam[i] + foam * w).min(1.0);
+            s.waves.press(i, strength * PRESS * w);
         });
+    }
+
+    /// A push on the wave layer alone (rain, a body's pressure): it moves no water.
+    fn press(&mut self, lx: f32, lz: f32, radius: f32, amount: f32) {
+        self.around(lx, lz, radius, |s, i, _, _, w| s.waves.press(i, amount * w));
     }
 
     /// Something entered or left the water at `speed` blocks a second.
     fn impact(&mut self, lx: f32, lz: f32, surface: f32, speed: f32) {
         let radius = (0.8 + speed * 0.12).min(2.5);
-        self.ripple(lx, lz, radius, speed * 0.9, 0.35 * (speed / 5.0).min(1.0));
+        self.ripple(lx, lz, radius, speed * 0.9, 0.2 * (speed / 5.0).min(1.0));
         let up = (speed / 6.0).clamp(0.4, 1.6);
         for _ in 0..((speed * 14.0) as usize).min(220) {
             let a = self.rng.range(0.0, std::f32::consts::TAU);
@@ -552,7 +642,7 @@ impl WaterSim {
             let [u, v] = s.grid.velocity(i);
             s.grid.qx[i] += h * ((velocity[0] - u) + nx * speed * 0.5) * w * gain;
             s.grid.qz[i] += h * ((velocity[1] - v) + nz * speed * 0.5) * w * gain;
-            s.foam[i] = (s.foam[i] + speed * 0.04 * w * gain).min(1.0);
+            s.foam[i] = (s.foam[i] + speed * 0.015 * w * gain).min(1.0);
         });
     }
 
@@ -562,7 +652,7 @@ impl WaterSim {
         let side = REGION_BLOCKS as f32;
         for _ in 0..self.count(drops) {
             let (x, z) = (self.rng.range(0.0, side), self.rng.range(0.0, side));
-            self.ripple(x, z, 0.6, 0.5, 0.0);
+            self.press(x, z, 0.5, 0.5 * PRESS);
         }
     }
 
@@ -588,7 +678,7 @@ impl WaterSim {
                 if plunge <= 0.0 {
                     continue;
                 }
-                self.foam[i] = (self.foam[i] + plunge * 0.6 * dt).min(1.0);
+                self.foam[i] = (self.foam[i] + plunge * 0.4 * dt).min(1.0);
                 let (lx, lz) = ((x as f32 + 0.5) * CELL, (z as f32 + 0.5) * CELL);
                 let surface = self.grid.surface(i);
                 for _ in 0..self.count((plunge * 12.0 * dt).min(6.0)) {
@@ -633,17 +723,37 @@ impl WaterSim {
                 let back_z = z as f32 - v * dt / CELL;
                 let mut foam = bilinear(&self.foam, back_x, back_z);
                 let speed = (u * u + v * v).sqrt();
-                let mut made = (speed - 1.0).max(0.0) * 0.15;
-                if g.depth[i] < 0.15 && speed > 0.4 {
-                    made += 0.4 * speed;
+                let mut made = (speed - 1.5).max(0.0) * FOAM_FAST;
+                if g.depth[i] < 0.15 && speed > 0.6 {
+                    made += FOAM_SHALLOW * (speed - 0.6);
                 }
                 if (1..n - 1).contains(&x) && (1..n - 1).contains(&z) {
                     let div = (g.velocity(i + 1)[0] - g.velocity(i - 1)[0] + g.velocity(i + n)[1]
                         - g.velocity(i - n)[1])
                         * inv;
-                    made += (-div - 1.0).max(0.0) * 0.15;
+                    made += (-div - 1.5).max(0.0) * FOAM_FAST;
+                    // Water running or surging into a block (or a bank) breaks white on it.
+                    let surface = g.surface(i);
+                    let rise = self.waves.rate(i).abs();
+                    for (j, nx, nz) in [
+                        (i - 1, -1.0, 0.0),
+                        (i + 1, 1.0, 0.0),
+                        (i - n, 0.0, -1.0),
+                        (i + n, 0.0, 1.0),
+                    ] {
+                        if g.bed[j] > surface {
+                            let into = (u * nx + v * nz).max(0.0);
+                            made += FOAM_SHORE * (into + rise * 4.0);
+                        }
+                    }
+                    // A steep wave crest (a wake's arms, a splash's ring) whitens as it breaks.
+                    let w = &self.waves.height;
+                    let slope = ((w[i + 1] - w[i - 1]).powi(2) + (w[i + n] - w[i - n]).powi(2))
+                        .sqrt()
+                        * inv;
+                    made += (slope - 0.15).max(0.0) * FOAM_CREST;
                 }
-                foam = (foam + made * dt) * (-0.4 * dt).exp();
+                foam = (foam + made * dt) * (-FOAM_FADE * dt).exp();
                 self.foam_next[i] = foam.clamp(0.0, 1.0);
             }
         }
@@ -682,7 +792,7 @@ impl WaterSim {
         let mut cells: Vec<[f32; 2]> = (0..n * n)
             .map(|i| {
                 if g.wet(i) {
-                    [g.surface(i), g.depth[i]]
+                    [g.surface(i) + self.waves.at(i), g.depth[i]]
                 } else {
                     [f32::NAN, 0.0]
                 }
@@ -739,7 +849,16 @@ impl WaterSim {
             let [u, v] = g.velocity(i);
             self.heights[i] = [rel(surface), if depth == 0.0 { -0.05 } else { depth }, u, v];
             let [sky, block] = self.light[i];
-            self.aux[i] = [(self.foam[i] * 255.0) as u8, sky * 17, block * 17, 0];
+            // A block standing out of the water (or an unloaded column): the renderer cuts
+            // the smoothed surface there along the block's edges, so it neither shows over the
+            // block nor rounds its corners off.
+            let blocked = g.bed[i] >= WALL || (!g.wet(i) && g.bed[i] > surface);
+            self.aux[i] = [
+                (self.foam[i] * 255.0) as u8,
+                sky * 17,
+                block * 17,
+                if blocked { 255 } else { 0 },
+            ];
             if (self.vanilla[i] || g.wet(i)) && g.bed[i] < WALL {
                 band[0] = band[0].min(g.bed[i] - 1.0);
                 band[1] = band[1].max(g.surface(i).max(g.bed[i]) + 1.0);
@@ -875,6 +994,32 @@ mod tests {
             .chain(&sim.grid().qz)
             .any(|q| q.abs() > 0.05);
         assert!(moving, "the impact set the water moving");
+    }
+
+    #[test]
+    fn a_placed_source_shows_and_spills_around() {
+        let placed = std::cell::Cell::new(false);
+        let mut sample = |x: i32, z: i32, _| {
+            let source = placed.get() && x == 8 && z == 8;
+            Column {
+                bed: Some(64.0),
+                water: source.then_some(64.0 + 8.0 / 9.0),
+                source,
+                sky: 15,
+                block: 0,
+            }
+        };
+        let mut sim = WaterSim::new();
+        sim.update(&input([8.0, 66.0, 8.0]), &mut sample);
+        placed.set(true);
+        for _ in 0..600 {
+            sim.update(&input([8.0, 66.0, 8.0]), &mut sample);
+        }
+        let [ox, oz] = sim.origin();
+        let g = sim.grid();
+        let at = |x: i32, z: i32| g.index(((x - ox) * 2) as usize, ((z - oz) * 2) as usize);
+        assert!(g.depth[at(8, 8)] > 0.1, "the source shows");
+        assert!(g.wet(at(9, 8)), "it spills onto the ground around it");
     }
 
     #[test]

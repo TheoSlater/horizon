@@ -27,7 +27,7 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> u: Uniforms;
 // Per cell: surface height (camera-relative), depth (negative: dry), velocity X, Z.
 @group(0) @binding(1) var heights: texture_2d<f32>;
-// Per cell: foam, sky light, block light.
+// Per cell: foam, sky light, block light, 1 where a block stands out of the water.
 @group(0) @binding(2) var aux: texture_2d<f32>;
 
 // Uniform cubic B-spline weights of the four taps around t, and their derivatives.
@@ -81,15 +81,32 @@ fn field(g: vec2<f32>) -> Field {
 }
 
 // One travelling wave (deep-water dispersion): height and its X and Z slopes.
-fn wave(p: vec2<f32>, t: f32, direction: vec2<f32>, length: f32, height: f32) -> vec3<f32> {
-    let d = normalize(direction);
+fn wave(p: vec2<f32>, t: f32, angle: f32, length: f32, height: f32, offset: f32) -> vec3<f32> {
+    let d = vec2(cos(angle), sin(angle));
     let k = 6.2831853 / length;
-    let phase = dot(d, p) * k - sqrt(9.81 * k) * t;
+    let phase = dot(d, p) * k - sqrt(9.81 * k) * t + offset;
     return vec3(height * sin(phase), height * k * cos(phase) * d);
 }
+// Wind sea: twelve waves of unrelated lengths spread around the wind's heading (so they never
+// line up into a repeating pattern), their heights following the spectrum's fall toward short
+// waves, under a slow drifting envelope that gathers them into groups, as on open water.
+const WIND: f32 = 0.6;
+const WAVE_COUNT: i32 = 12;
 fn waves(p: vec2<f32>, t: f32) -> vec3<f32> {
-    return wave(p, t, vec2(1.0, 0.3), 7.3, 1.0) + wave(p, t, vec2(-0.4, 1.0), 4.1, 0.6)
-        + wave(p, t, vec2(0.8, -0.7), 2.6, 0.35) + wave(p, t, vec2(0.2, 0.9), 1.7, 0.2);
+    var sum = vec3(0.0);
+    var total = 0.0;
+    for (var i = 0; i < WAVE_COUNT; i++) {
+        let fi = f32(i);
+        // Lengths from 9 down to about 1.2 blocks, by an irrational ratio.
+        let length = 9.0 * pow(0.833, fi);
+        // Golden-angle spread within +-70 degrees of the wind.
+        let spread = (fract(fi * 0.618034) - 0.5) * 2.44;
+        let height = pow(length / 9.0, 1.2);
+        sum += wave(p, t, WIND + spread, length, height, fi * 2.399);
+        total += height;
+    }
+    let envelope = 0.55 + 0.45 * noise(p * 0.045 + vec2(t * 0.021, -t * 0.013)).x * 2.0;
+    return sum / total * 2.0 * clamp(envelope, 0.15, 1.0);
 }
 
 struct SurfaceOut {
@@ -112,7 +129,7 @@ struct SurfaceOut {
     let f = field(g);
     let local = g * u.origin.w;
     let world = u.phase.xy + local;
-    let height = u.grid.w * (1.0 + 2.0 * u.grid.z) * smoothstep(0.15, 2.0, f.depth);
+    let height = u.grid.w * (1.0 + u.grid.z) * smoothstep(0.15, 2.0, f.depth);
     let w = waves(world, u.grid.y) * height;
     let side = u.grid.x * u.origin.w;
     let edge = min(min(local.x, local.y), side - max(local.x, local.y));
@@ -194,8 +211,14 @@ fn brightness(light: vec2<f32>) -> f32 {
     let depth = in.water.x;
     let wet = smoothstep(0.0, 0.05, depth) * in.water.z;
     if wet < 0.01 { discard; }
+    // Cut along block edges: the nearest cell, not the smoothed field, says where blocks are.
+    let n_cells = i32(u.grid.x);
+    let cell = vec2<i32>(floor((in.position.xz - u.origin.xz) / u.origin.w));
+    if all(cell >= vec2(0)) && all(cell < vec2(n_cells)) && textureLoad(aux, cell, 0).w > 0.5 {
+        discard;
+    }
     let speed = length(in.velocity);
-    let detail = ripples(in.world, in.velocity, u.grid.y) * (0.03 + 0.02 * min(speed, 3.0) + 0.05 * u.grid.z);
+    let detail = ripples(in.world, in.velocity, u.grid.y) * (0.015 + 0.015 * min(speed, 3.0) + 0.03 * u.grid.z);
     var n = normalize(in.normal - vec3(detail.x, 0.0, detail.y));
     let view = normalize(-in.position);
     // The camera under this part of the surface sees it from below.
