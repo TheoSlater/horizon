@@ -87,6 +87,78 @@ impl Preset {
     }
 }
 
+/// The renderer used for world frames. `Realistic` currently uses the same
+/// world shading and adds an identity pass after world rendering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RendererMode {
+    #[default]
+    Vanilla,
+    Realistic,
+}
+impl RendererMode {
+    pub const ALL: [Self; 2] = [Self::Vanilla, Self::Realistic];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Vanilla => "vanilla",
+            Self::Realistic => "realistic",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Vanilla => "Vanilla",
+            Self::Realistic => "Realistic",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.name() == value)
+            .unwrap_or_default()
+    }
+}
+
+/// Quality preset for future realistic-renderer features. Phase 1 does not
+/// allocate resources based on this selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RealisticQuality {
+    Low,
+    #[default]
+    Medium,
+    High,
+    Ultra,
+}
+impl RealisticQuality {
+    pub const ALL: [Self; 4] = [Self::Low, Self::Medium, Self::High, Self::Ultra];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Ultra => "ultra",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
+            Self::Ultra => "Ultra",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|quality| quality.name() == value)
+            .unwrap_or_default()
+    }
+}
+
 /// Entity occlusion strategy. The synchronous mode preserves the original
 /// same-frame CPU test; asynchronous results only hide a mesh when their
 /// camera, bounds and occluder evidence still match.
@@ -660,6 +732,10 @@ impl Graphics {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Graphics {
     pub preset: Preset,
+    /// World renderer selection. Vanilla remains the compatibility default.
+    pub renderer_mode: RendererMode,
+    /// Preset reserved for future realistic-renderer quality controls.
+    pub realistic_quality: RealisticQuality,
     /// Distant surface terrain range, in chunks; 0 disables LODs.
     pub lod_distance: u32,
     /// How finely far terrain is drawn; Full unless the player picks Reduced.
@@ -780,6 +856,8 @@ impl Default for Graphics {
     fn default() -> Self {
         Self {
             preset: Preset::Custom,
+            renderer_mode: RendererMode::Vanilla,
+            realistic_quality: RealisticQuality::Medium,
             lod_distance: 0,
             far_detail: FarDetail::Full,
             blue_map: crate::bluemap::Settings::default(),
@@ -871,6 +949,8 @@ impl Graphics {
             let number = |d: u32| value.parse().unwrap_or(d);
             match key.trim() {
                 "preset" => g.preset = Preset::parse(value),
+                "rendererMode" => g.renderer_mode = RendererMode::parse(value),
+                "realisticQuality" => g.realistic_quality = RealisticQuality::parse(value),
                 "lodDistance" => {
                     g.lod_distance = number(g.lod_distance).min(crate::lod::MAX_CHUNKS)
                 }
@@ -980,8 +1060,10 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nrendererMode:{}\nrealisticQuality:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
+            self.renderer_mode.name(),
+            self.realistic_quality.name(),
             self.lod_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
@@ -1164,6 +1246,8 @@ mod tests {
     fn round_trips() {
         let g = Graphics {
             preset: Preset::Balanced,
+            renderer_mode: RendererMode::Realistic,
+            realistic_quality: RealisticQuality::Ultra,
             lod_distance: 256,
             far_detail: FarDetail::Reduced,
             blue_map: crate::bluemap::Settings {
@@ -1295,6 +1379,45 @@ mod tests {
             ),
             Graphics::default()
         );
+    }
+
+    #[test]
+    fn renderer_mode_and_quality_default_and_persist() {
+        assert_eq!(Graphics::default().renderer_mode, RendererMode::Vanilla);
+        assert_eq!(
+            Graphics::default().realistic_quality,
+            RealisticQuality::Medium
+        );
+        // Settings files written before these keys remain vanilla by default.
+        let legacy = Graphics::parse("preset:balanced\n");
+        assert_eq!(legacy.renderer_mode, RendererMode::Vanilla);
+        assert_eq!(legacy.realistic_quality, RealisticQuality::Medium);
+
+        for renderer_mode in RendererMode::ALL {
+            for realistic_quality in RealisticQuality::ALL {
+                let graphics = Graphics {
+                    renderer_mode,
+                    realistic_quality,
+                    ..Graphics::default()
+                };
+                assert_eq!(Graphics::parse(&graphics.serialize()), graphics);
+            }
+        }
+
+        let dir =
+            std::env::temp_dir().join(format!("horizon-renderer-settings-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let graphics = Graphics {
+            renderer_mode: RendererMode::Realistic,
+            realistic_quality: RealisticQuality::High,
+            ..Graphics::default()
+        };
+        graphics.save(&dir);
+        let loaded = Graphics::load(&dir);
+        assert_eq!(loaded.renderer_mode, graphics.renderer_mode);
+        assert_eq!(loaded.realistic_quality, graphics.realistic_quality);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

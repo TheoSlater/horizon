@@ -199,6 +199,7 @@ mod pack_weather;
 mod page_runs;
 pub mod panorama;
 mod readback;
+mod realistic;
 mod resident;
 mod reuse;
 mod stars;
@@ -1362,6 +1363,13 @@ pub struct Renderer {
     layout: crate::chunk::ColumnLayout,
     /// Resolution scale, FXAA and TAA (Horizon settings).
     world_post: world_post::Post,
+    /// Requested native renderer mode and its future quality preset.
+    realistic_mode: crate::graphics::RendererMode,
+    realistic_quality: crate::graphics::RealisticQuality,
+    /// Allocated on demand only while Realistic mode can run with the active shader pipeline.
+    realistic: Option<realistic::Pipeline>,
+    /// Logs a shader-pack compatibility suspension once per transition.
+    realistic_suspended: bool,
     /// Frame generation (Horizon setting).
     frame_gen: frame_gen::FrameGen,
     /// The entities' texture atlas (`entity_group`'s), for frame generation's motion.
@@ -4702,6 +4710,10 @@ impl Renderer {
             occlusion: occlusion::Occlusion::new(crate::chunk::MIN_Y, crate::chunk::HEIGHT / 16),
             layout: crate::chunk::ColumnLayout::VANILLA,
             world_post,
+            realistic_mode: crate::graphics::RendererMode::Vanilla,
+            realistic_quality: crate::graphics::RealisticQuality::Medium,
+            realistic: None,
+            realistic_suspended: false,
             frame_gen: frame_gen::FrameGen::new(),
             entity_atlas: atlas_view.clone(),
             hdr: None,
@@ -6387,6 +6399,20 @@ impl Renderer {
         self.world_post.antialias = antialias && !taa;
         self.world_post.taa = taa;
         self.world_post.upscale = if taa { upscale.clamp(1.0, 4.0) } else { 1.0 };
+    }
+    /// Selects the native world renderer. Mode changes apply on the next frame;
+    /// resources are created lazily and released when Vanilla is selected.
+    pub fn set_realistic_rendering(
+        &mut self,
+        mode: crate::graphics::RendererMode,
+        quality: crate::graphics::RealisticQuality,
+    ) {
+        self.realistic_mode = mode;
+        self.realistic_quality = quality;
+        if mode == crate::graphics::RendererMode::Vanilla {
+            self.realistic = None;
+            self.realistic_suspended = false;
+        }
     }
     /// Runs `post` over the world from now on (`None`: no pack), for the dimension `dimension`;
     /// `block_ids` gives each block sprite layer's `mc_Entity` (id, fluid) and `at_midBlock.w`
@@ -8860,6 +8886,33 @@ impl Renderer {
         let pack_post = !frame.title && self.pack_post.as_ref().is_some_and(|p| p.1.is_some());
         // One of Horizon's own packs reads the same world target.
         let native_post = !frame.title && self.native.as_ref().is_some_and(|n| n.post.is_some());
+        let shader_pack_active = self
+            .pack_post
+            .as_ref()
+            .is_some_and(|(_, post)| post.is_some())
+            || self.native.is_some();
+        let realistic_compatible = realistic::enabled(self.realistic_mode, shader_pack_active);
+        if self.realistic_mode == crate::graphics::RendererMode::Realistic && shader_pack_active {
+            if !self.realistic_suspended {
+                log::info!(
+                    "Horizon renderer: Realistic mode is suspended while a shader pack is active"
+                );
+            }
+            self.realistic_suspended = true;
+            self.realistic = None;
+        } else {
+            self.realistic_suspended = false;
+            if self.realistic_mode == crate::graphics::RendererMode::Vanilla {
+                self.realistic = None;
+            } else if !frame.title && self.realistic.is_none() {
+                self.realistic = Some(realistic::Pipeline::new(
+                    &self.device,
+                    self.frame_format,
+                    self.realistic_quality,
+                ));
+            }
+        }
+        let realistic_active = !frame.title && realistic_compatible && self.realistic.is_some();
         if let Some(timer) = Self::pass_timer(&mut self.pack_post, &mut self.native)
             && timer.is_some() != self.pass_timing
         {
@@ -8925,7 +8978,7 @@ impl Renderer {
         let scaled = self.world_post.prepare(
             &self.device,
             [self.config.width, self.config.height],
-            pack_reads_world || fg,
+            pack_reads_world || fg || realistic_active,
         );
         let (world_view, world_depth) = match &scaled {
             Some((color, depth)) => (color, depth),
@@ -10442,8 +10495,20 @@ impl Renderer {
             let world = self
                 .frame_gen
                 .world(&self.device, &self.world_post, &self.config);
-            self.world_post
-                .finish(&self.queue, &mut encoder, &world, self.own_timing.as_mut());
+            if let Some(realistic) = self.realistic.as_mut().filter(|_| realistic_active) {
+                self.world_post.finish_realistic(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    &world,
+                    [self.config.width, self.config.height],
+                    realistic,
+                    self.own_timing.as_mut(),
+                );
+            } else {
+                self.world_post
+                    .finish(&self.queue, &mut encoder, &world, self.own_timing.as_mut());
+            }
             let camera = frame_gen::Camera {
                 jittered,
                 view_proj,
@@ -10482,12 +10547,24 @@ impl Renderer {
                 self.draw_overlay(&mut encoder, frame, &generated_view, generated, &overlay);
             }
         } else if scaled.is_some() {
-            self.world_post.finish(
-                &self.queue,
-                &mut encoder,
-                &view_target,
-                self.own_timing.as_mut(),
-            );
+            if let Some(realistic) = self.realistic.as_mut().filter(|_| realistic_active) {
+                self.world_post.finish_realistic(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    &view_target,
+                    [self.config.width, self.config.height],
+                    realistic,
+                    self.own_timing.as_mut(),
+                );
+            } else {
+                self.world_post.finish(
+                    &self.queue,
+                    &mut encoder,
+                    &view_target,
+                    self.own_timing.as_mut(),
+                );
+            }
         }
         if !frame.title {
             let (depth, depth_size) = match &scaled {

@@ -544,6 +544,7 @@ impl Game<'_> {
                 s.horizon.taa,
                 s.horizon.upscaling.ratio(),
             );
+            r.set_realistic_rendering(s.horizon.renderer_mode, s.horizon.realistic_quality);
             r.set_frame_generation(
                 s.horizon.frame_generation != horizon_client::graphics::FrameGeneration::Off,
             );

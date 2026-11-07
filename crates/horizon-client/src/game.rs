@@ -14986,6 +14986,8 @@ impl Game<'_> {
                 self.settings.file.int("textureFiltering"),
                 self.settings.file.int("maxAnisotropyBit"),
             ),
+            self.settings.horizon.renderer_mode,
+            self.settings.horizon.realistic_quality,
         )?;
         renderer.screenshot = screenshot;
         renderer.screenshot_result = screenshot_result;
@@ -15027,6 +15029,8 @@ impl Game<'_> {
                 self.settings.file.int("textureFiltering"),
                 self.settings.file.int("maxAnisotropyBit"),
             ),
+            self.settings.horizon.renderer_mode,
+            self.settings.horizon.realistic_quality,
         )
     }
     fn apply_settings(&mut self) {
@@ -21654,6 +21658,8 @@ fn build_renderer(
     wide_frame: bool,
     shader_pack: bool,
     filtering: (i32, i32),
+    renderer_mode: horizon_client::graphics::RendererMode,
+    realistic_quality: horizon_client::graphics::RealisticQuality,
 ) -> Result<Renderer> {
     let assets = &pack.render;
     let atlas = &gui.atlas;
@@ -21693,6 +21699,7 @@ fn build_renderer(
         wide_frame,
         shader_pack,
     ))?;
+    renderer.set_realistic_rendering(renderer_mode, realistic_quality);
     renderer.hud.sprite_animations = atlas
         .sprite_animations
         .iter()
@@ -22363,6 +22370,8 @@ impl Loading {
                     self.settings.file.int("textureFiltering"),
                     self.settings.file.int("maxAnisotropyBit"),
                 ),
+                self.settings.horizon.renderer_mode,
+                self.settings.horizon.realistic_quality,
             )
         })?;
         log::info!(

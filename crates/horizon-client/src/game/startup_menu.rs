@@ -440,6 +440,10 @@ impl Loading {
         if let Some(renderer) = &mut self.renderer {
             renderer.gamma = self.settings.gamma;
             renderer.set_present_mode(self.settings.vsync, self.settings.horizon.present_mode);
+            renderer.set_realistic_rendering(
+                self.settings.horizon.renderer_mode,
+                self.settings.horizon.realistic_quality,
+            );
         }
         horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
         super::narrator::sync(&self.settings);

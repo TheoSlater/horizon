@@ -529,6 +529,54 @@ impl Post {
         self.finish_with(encoder, screen, &taa.show[i], timing);
     }
 
+    /// Finishes a Realistic-mode world frame through the native identity pass.
+    /// FXAA still runs first into a resize-aware intermediate; TAA resolves into
+    /// its existing history before the identity pass reads it.
+    pub fn finish_realistic(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        screen: &wgpu::TextureView,
+        screen_size: [u32; 2],
+        realistic: &mut super::realistic::Pipeline,
+        mut timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
+        let Some(target) = &self.target else { return };
+        if let Some(taa) = target.taa.as_ref().filter(|_| self.taa_previous.is_some())
+            && let Some(res) = &self.taa_resources
+        {
+            let i = (self.taa_frame % 2) as usize;
+            queue.write_buffer(&res.uniform, 0, bytemuck::bytes_of(&self.taa_this_frame));
+            let attachments = [Some(wgpu::RenderPassColorAttachment {
+                view: &taa.history[i],
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Horizon TAA"),
+                timestamp_writes: timing.as_deref_mut().and_then(|timer| timer.writes("TAA")),
+                color_attachments: &attachments,
+                ..Default::default()
+            });
+            pass.set_pipeline(&res.pipeline);
+            pass.set_bind_group(0, &taa.resolve[i], &[]);
+            pass.draw(0..3, 0..1);
+            drop(pass);
+            realistic.run(device, encoder, &taa.history[i], screen, timing);
+        } else if self.antialias {
+            let intermediate = realistic.scratch_view(device, screen_size);
+            self.finish_with(encoder, &intermediate, &target.group, timing.as_deref_mut());
+            realistic.run(device, encoder, &intermediate, screen, timing);
+        } else {
+            realistic.run(device, encoder, &target.color, screen, timing);
+        }
+    }
+
     /// Draw what `group` binds (`bind`) onto `screen`.
     pub fn finish_with(
         &self,

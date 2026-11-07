@@ -359,6 +359,8 @@ impl Game<'_> {
                         self.settings.file.int("textureFiltering"),
                         self.settings.file.int("maxAnisotropyBit"),
                     ),
+                    self.settings.horizon.renderer_mode,
+                    self.settings.horizon.realistic_quality,
                 )
             })
             .transpose()

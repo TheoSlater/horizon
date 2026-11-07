@@ -493,6 +493,8 @@ impl Split<'_> {
                 guest.settings.file.int("textureFiltering"),
                 guest.settings.file.int("maxAnisotropyBit"),
             ),
+            guest.settings.horizon.renderer_mode,
+            guest.settings.horizon.realistic_quality,
         )?);
         guest.window = Some(window);
         guest.world_renderer_ready = true;

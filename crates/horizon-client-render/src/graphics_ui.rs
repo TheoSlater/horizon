@@ -7,7 +7,8 @@
 use crate::{
     graphics::{
         EntityCullingMode, FarDetail, FrameGeneration, GraphicsApi, LeafCullingMode, Overlay,
-        Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
+        Pacing, ParticleCullingMode, PresentMode, Preset, RealisticQuality, RendererMode,
+        Upscaling,
     },
     graphics_style::{self as style, Cost},
     hud::{HudAtlas, HudBatch},
@@ -66,6 +67,8 @@ impl Page {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum H {
     Preset,
+    RendererMode,
+    RealisticQuality,
     LodDistance,
     FarDetail,
     BlueMapAutoDetect,
@@ -381,6 +384,21 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::FrameGeneration,
                             Medium,
                             "Shows a made-up frame between each two real ones: smoother, a little more lag.",
+                        ),
+                    ],
+                ),
+                (
+                    "Experimental renderer",
+                    vec![
+                        h(
+                            H::RendererMode,
+                            Low,
+                            "Same image. Shader packs suspend the Realistic pass while active.",
+                        ),
+                        h(
+                            H::RealisticQuality,
+                            None,
+                            "Saved for future features; no effect yet.",
                         ),
                     ],
                 ),
@@ -807,6 +825,8 @@ impl H {
         let g = &s.horizon;
         match self {
             H::Preset => labelled("Preset", g.preset.label()),
+            H::RendererMode => labelled("Renderer Mode", g.renderer_mode.label()),
+            H::RealisticQuality => labelled("Realistic Quality", g.realistic_quality.label()),
             H::LodDistance => match g.lod_distance {
                 0 => labelled("LOD Distance", "Off"),
                 n => labelled("LOD Distance", lang::tr("%s chunks", &[&n])),
@@ -983,6 +1003,10 @@ impl H {
         }
         let g = &mut s.horizon;
         match self {
+            H::RendererMode => g.renderer_mode = step(&RendererMode::ALL, g.renderer_mode, back),
+            H::RealisticQuality => {
+                g.realistic_quality = step(&RealisticQuality::ALL, g.realistic_quality, back)
+            }
             H::FarDetail => {
                 g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
             }
@@ -1236,6 +1260,8 @@ impl Item {
             Item::Extra(_)
                 | Item::Horizon(
                     H::Preset
+                        | H::RendererMode
+                        | H::RealisticQuality
                         | H::BlueMapAutoDetect
                         | H::BlueMapRadius
                         | H::Overlay
@@ -3431,5 +3457,26 @@ mod tests {
                 "{code}"
             );
         }
+    }
+
+    #[test]
+    fn renderer_mode_and_quality_are_selectable_from_graphics_settings() {
+        let mut settings = Settings::default();
+        let quality_page = rows()
+            .into_iter()
+            .find(|(page, _)| *page == Page::Quality)
+            .unwrap();
+        let items: Vec<_> = quality_page
+            .1
+            .into_iter()
+            .flat_map(|(_, group)| group.into_iter().map(|setting| setting.item))
+            .collect();
+        assert!(items.contains(&Item::Horizon(H::RendererMode)));
+        assert!(items.contains(&Item::Horizon(H::RealisticQuality)));
+
+        H::RendererMode.cycle(&mut settings, false);
+        assert_eq!(settings.horizon.renderer_mode, RendererMode::Realistic);
+        H::RealisticQuality.cycle(&mut settings, false);
+        assert_eq!(settings.horizon.realistic_quality, RealisticQuality::High);
     }
 }
